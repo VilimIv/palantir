@@ -133,15 +133,6 @@ func parseToken(r *http.Request) (string, bool) {
 	return parseTokenString(header[7:])
 }
 
-// Obavijesti sve spojene klijente u mreži
-func notifyNetwork(networkID string, msg WSMessage, excludeUsername string) {
-	for _, client := range clients[networkID] {
-		if client.Username != excludeUsername {
-			client.Send(msg)
-		}
-	}
-}
-
 // --- Handleri ---
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -244,10 +235,14 @@ func handleJoinNetwork(w http.ResponseWriter, r *http.Request) {
 	network.Peers = append(network.Peers, newPeer)
 
 	// Obavijesti sve spojene klijente da je novi peer ušao
-	notifyNetwork(req.NetworkID, WSMessage{
-		Type: "peer_joined",
-		Data: newPeer,
-	}, username)
+	for _, client := range clients[req.NetworkID] {
+		if client.Username != username {
+			client.Send(WSMessage{
+				Type: "peer_joined",
+				Data: newPeer,
+			})
+		}
+	}
 
 	log.Printf("Mreža %s: %s se pridružio → %s\n", req.NetworkID, username, ip)
 	writeJSON(w, 200, map[string]any{
@@ -350,40 +345,71 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				"port":      wsMsg.Data["port"],
 			}
 			// Proslijedi ostalima
-			notifyNetwork(networkID, WSMessage{
-				Type: "peer_announce",
-				Data: map[string]any{
-					"username":  username,
-					"virtualIP": wsMsg.Data["virtualIP"],
-					"host":      wsMsg.Data["host"],
-					"port":      wsMsg.Data["port"],
-				},
-			}, username)
+			for _, c := range clients[networkID] {
+				if c.Username != username {
+					c.Send(WSMessage{
+						Type: "peer_announce",
+						Data: map[string]any{
+							"username":  username,
+							"virtualIP": wsMsg.Data["virtualIP"],
+							"host":      wsMsg.Data["host"],
+							"port":      wsMsg.Data["port"],
+						},
+					})
+				}
+			}
 			mu.Unlock()
 			log.Printf("Announce: %s → %v\n", username, wsMsg.Data)
 		}
 	}
 
-	// Klijent se odspojio
+	// --- Klijent se odspojio ---
 	mu.Lock()
+
+	// Ukloni iz liste klijenata
 	for i, c := range clients[networkID] {
 		if c == client {
 			clients[networkID] = append(clients[networkID][:i], clients[networkID][i+1:]...)
 			break
 		}
 	}
+
+	// Pronađi virtualIP i ukloni iz network.Peers
+	var leftVirtualIP string
+	if net, exists := networks[networkID]; exists {
+		for i, p := range net.Peers {
+			if p.Username == username {
+				leftVirtualIP = p.VirtualIP
+				net.Peers = append(net.Peers[:i], net.Peers[i+1:]...)
+				break
+			}
+		}
+	}
+
 	// Obriši announce
 	if announces[networkID] != nil {
 		delete(announces[networkID], username)
 	}
+
+	// Kopiraj listu klijenata za notifikaciju (da ne šaljemo pod lockom)
+	toNotify := make([]*WSClient, len(clients[networkID]))
+	copy(toNotify, clients[networkID])
+
 	mu.Unlock()
 
 	log.Printf("WebSocket: %s odspojio se s mreže %s\n", username, networkID)
 
-	notifyNetwork(networkID, WSMessage{
+	// Obavijesti ostale peere (izvan locka)
+	msg := WSMessage{
 		Type: "peer_left",
-		Data: map[string]string{"username": username},
-	}, "")
+		Data: map[string]string{
+			"username":  username,
+			"virtualIP": leftVirtualIP,
+		},
+	}
+	for _, c := range toNotify {
+		c.Send(msg)
+	}
 }
 
 func main() {
