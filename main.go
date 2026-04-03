@@ -481,6 +481,8 @@ func tunToUDP() {
 				continue
 			}
 
+			log.Printf("[TUN→UDP] Paket %d bytea, dest=%s\n", sizes[i], destIP)
+
 			type outPacket struct {
 				addr *net.UDPAddr
 				data []byte
@@ -515,7 +517,11 @@ func tunToUDP() {
 
 			peersMu.RUnlock()
 
+			if len(toSend) == 0 {
+				log.Printf("[TUN→UDP] Nema peera za dest=%s\n", destIP)
+			}
 			for _, pkt := range toSend {
+				log.Printf("[TUN→UDP] Šaljem %d bytea na %s\n", len(pkt.data), pkt.addr)
 				sendUDP(pkt.addr, msgData, pkt.data)
 			}
 		}
@@ -574,11 +580,14 @@ func udpToTUN() {
 				decrypted, err := peer.RecvCipher.Decrypt(nil, nil, payload)
 				peer.mu.Unlock()
 				if err != nil {
+					log.Printf("[UDP→TUN] Decrypt error od %s: %v\n", peer.Username, err)
 					continue
 				}
+				log.Printf("[UDP→TUN] Dekriptirano %d bytea od %s\n", len(decrypted), peer.Username)
 				tunDev.Write([][]byte{decrypted}, 0)
 			} else {
 				peer.mu.Unlock()
+				log.Printf("[UDP→TUN] Data od %s ali peer nije ready\n", peer.Username)
 			}
 		}
 	}
