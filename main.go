@@ -22,8 +22,8 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-var serverURL = "http://localhost:8080"
-var wsURL = "ws://localhost:8080"
+var serverURL = "http://20.250.145.46:8080"
+var wsURL = "ws://20.250.145.46:8080"
 
 // UDP framing: prvi byte razlikuje tip poruke
 const (
