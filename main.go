@@ -22,8 +22,8 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-var serverURL = "http://20.250.145.46:8080"
-var wsURL = "ws://20.250.145.46:8080"
+var serverURL = "http://localhost:8080"
+var wsURL = "ws://localhost:8080"
 
 // UDP framing: prvi byte razlikuje tip poruke
 const (
@@ -31,6 +31,7 @@ const (
 	msgData      byte = 0x02
 	msgProbe     byte = 0x03 // probe za otkrivanje putanje do peera
 	msgProbeResp byte = 0x04 // odgovor na probe
+	msgKeepalive byte = 0x05 // keepalive za održavanje NAT mappinga
 )
 
 // Candidate predstavlja jedan mrežni endpoint na kojem je peer dostupan
@@ -279,6 +280,23 @@ func probePeer(peer *PeerInfo) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	log.Printf("Probe timeout za %s (%s)\n", peer.Username, peer.VirtualIP)
+}
+
+// keepalive šalje periodične pakete svim peerovima da održi NAT mapping aktivnim.
+// Bez ovoga, NAT mapping istekne nakon 30-60 sekundi neaktivnosti i tunel prestane raditi.
+func keepalive() {
+	for {
+		time.Sleep(15 * time.Second)
+		peersMu.RLock()
+		for _, peer := range peers {
+			peer.mu.Lock()
+			if peer.Resolved && peer.UDPAddr != nil {
+				sendUDP(peer.UDPAddr, msgKeepalive, nil)
+			}
+			peer.mu.Unlock()
+		}
+		peersMu.RUnlock()
+	}
 }
 
 // handleProbe procesira primljeni probe ili probe response.
@@ -533,6 +551,9 @@ func udpToTUN() {
 			handleProbe(udpAddr, msgType, payload)
 			continue
 		}
+		if msgType == msgKeepalive {
+			continue // samo održava NAT mapping, ne treba procesirati
+		}
 
 		// Handshake i data — lookup po UDP adresi
 		peersMu.RLock()
@@ -784,6 +805,7 @@ func main() {
 	go listenWebSocket(wsConn)
 	go tunToUDP()
 	go udpToTUN()
+	go keepalive()
 
 	// 9. Čekaj korisnika
 	fmt.Println("=============================")

@@ -309,10 +309,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				client.Send(WSMessage{
 					Type: "peer_announce",
 					Data: map[string]any{
-						"username":  announceUsername,
-						"virtualIP": data["virtualIP"],
-						"host":      data["host"],
-						"port":      data["port"],
+						"username":   announceUsername,
+						"virtualIP":  data["virtualIP"],
+						"candidates": data["candidates"],
 					},
 				})
 			}
@@ -340,9 +339,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				announces[networkID] = make(map[string]map[string]any)
 			}
 			announces[networkID][username] = map[string]any{
-				"virtualIP": wsMsg.Data["virtualIP"],
-				"host":      wsMsg.Data["host"],
-				"port":      wsMsg.Data["port"],
+				"virtualIP":  wsMsg.Data["virtualIP"],
+				"candidates": wsMsg.Data["candidates"],
 			}
 			// Proslijedi ostalima
 			for _, c := range clients[networkID] {
@@ -350,10 +348,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					c.Send(WSMessage{
 						Type: "peer_announce",
 						Data: map[string]any{
-							"username":  username,
-							"virtualIP": wsMsg.Data["virtualIP"],
-							"host":      wsMsg.Data["host"],
-							"port":      wsMsg.Data["port"],
+							"username":   username,
+							"virtualIP":  wsMsg.Data["virtualIP"],
+							"candidates": wsMsg.Data["candidates"],
 						},
 					})
 				}
