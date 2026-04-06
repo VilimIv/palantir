@@ -3,7 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -29,30 +32,35 @@ var wsURL = "ws://20.250.145.46:8080"
 const (
 	msgHandshake byte = 0x01
 	msgData      byte = 0x02
-	msgProbe     byte = 0x03 // probe za otkrivanje putanje do peera
-	msgProbeResp byte = 0x04 // odgovor na probe
-	msgKeepalive byte = 0x05 // keepalive za održavanje NAT mappinga
+	msgProbe     byte = 0x03
+	msgProbeResp byte = 0x04
+	msgKeepalive byte = 0x05
 )
+
+// Offset za TUN read/write — Linux treba prostor za virtio net header
+const tunOffset = 16
 
 // Candidate predstavlja jedan mrežni endpoint na kojem je peer dostupan
 type Candidate struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
-	Type string `json:"type"` // "local" ili "stun"
+	Type string `json:"type"`
 }
 
-// PeerInfo drži stanje jednog peera: kandidate, handshake i cipher stanje
+// PeerInfo drži stanje jednog peera
 type PeerInfo struct {
 	Username          string
 	VirtualIP         string
-	Candidates        []Candidate // lista kandidata za probing
+	Candidates        []Candidate
 	UDPAddr           *net.UDPAddr
-	Resolved          bool // true kad je probing našao radnu putanju
+	Resolved          bool
 	Handshake         *noise.HandshakeState
-	HandshakeResponse []byte // cache za retransmisiju responderovog odgovora
-	SendCipher        *noise.CipherState
-	RecvCipher        *noise.CipherState
-	Ready             bool // true kad je Noise handshake završen
+	HandshakeResponse []byte
+	MyRandom          []byte      // naš random za key derivation (postavlja se u handshakeu)
+	SendAEAD          cipher.AEAD // AES-256-GCM za slanje
+	RecvAEAD          cipher.AEAD // AES-256-GCM za primanje
+	SendNonce         uint64      // counter za slanje — svaki paket dobije jedinstveni nonce
+	Ready             bool
 	mu                sync.Mutex
 }
 
@@ -60,8 +68,8 @@ var (
 	myVirtualIP string
 	myUsername  string
 
-	peers      = map[string]*PeerInfo{} // virtualIP → peer
-	peersByUDP = map[string]*PeerInfo{} // udpAddr.String() → peer
+	peers      = map[string]*PeerInfo{}
+	peersByUDP = map[string]*PeerInfo{}
 	peersMu    sync.RWMutex
 
 	udpConn     net.PacketConn
@@ -69,10 +77,59 @@ var (
 	cipherSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2b)
 )
 
+// --- Kriptografija: key derivation i AEAD ---
+
+// deriveKeys derivira dva 256-bit ključa iz initiator i responder randomova.
+// keyI2R se koristi za smjer initiator→responder, keyR2I za obrnuti.
+func deriveKeys(initiatorRandom, responderRandom []byte) (keyI2R, keyR2I [32]byte) {
+	combined := append(initiatorRandom, responderRandom...)
+	base := sha256.Sum256(combined)
+	keyI2R = sha256.Sum256(append(base[:], []byte("i2r")...))
+	keyR2I = sha256.Sum256(append(base[:], []byte("r2i")...))
+	return
+}
+
+// createAEAD kreira AES-256-GCM AEAD iz 32-byte ključa
+func createAEAD(key [32]byte) cipher.AEAD {
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		log.Fatal("AES error:", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		log.Fatal("GCM error:", err)
+	}
+	return aead
+}
+
+// encryptPacket enkriptira paket s explicit nonce (counter) i vraća [counter(8B) + ciphertext]
+func encryptPacket(aead cipher.AEAD, counter uint64, plaintext []byte) []byte {
+	nonce := make([]byte, 12) // GCM nonce = 12 bytea
+	binary.BigEndian.PutUint64(nonce[4:], counter)
+	encrypted := aead.Seal(nil, nonce, plaintext, nil)
+
+	// Prepend counter
+	buf := make([]byte, 8+len(encrypted))
+	binary.BigEndian.PutUint64(buf[0:8], counter)
+	copy(buf[8:], encrypted)
+	return buf
+}
+
+// decryptPacket dekriptira paket — čita counter iz prvih 8 bytea i koristi ga kao nonce
+func decryptPacket(aead cipher.AEAD, payload []byte) ([]byte, error) {
+	if len(payload) < 8 {
+		return nil, fmt.Errorf("paket prekratak: %d bytea", len(payload))
+	}
+	counter := binary.BigEndian.Uint64(payload[0:8])
+	ciphertext := payload[8:]
+
+	nonce := make([]byte, 12)
+	binary.BigEndian.PutUint64(nonce[4:], counter)
+	return aead.Open(nil, nonce, ciphertext, nil)
+}
+
 // --- STUN klijent ---
 
-// querySTUN šalje STUN Binding Request i vraća javnu IP:port adresu.
-// Koristi isti UDP socket kao tunel da STUN vrati mapping za taj port.
 func querySTUN(conn net.PacketConn) *net.UDPAddr {
 	stunServer, err := net.ResolveUDPAddr("udp4", "stun.l.google.com:19302")
 	if err != nil {
@@ -80,38 +137,34 @@ func querySTUN(conn net.PacketConn) *net.UDPAddr {
 		return nil
 	}
 
-	// STUN Binding Request (RFC 5389)
 	txID := make([]byte, 12)
 	rand.Read(txID)
 
 	req := make([]byte, 20)
-	binary.BigEndian.PutUint16(req[0:2], 0x0001)     // Message Type: Binding Request
-	binary.BigEndian.PutUint16(req[2:4], 0x0000)     // Message Length: 0
-	binary.BigEndian.PutUint32(req[4:8], 0x2112A442) // Magic Cookie
+	binary.BigEndian.PutUint16(req[0:2], 0x0001)
+	binary.BigEndian.PutUint16(req[2:4], 0x0000)
+	binary.BigEndian.PutUint32(req[4:8], 0x2112A442)
 	copy(req[8:20], txID)
 
 	conn.WriteTo(req, stunServer)
 
-	// Čekaj odgovor s timeoutom
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	buf := make([]byte, 1024)
 	n, _, err := conn.ReadFrom(buf)
-	conn.SetReadDeadline(time.Time{}) // resetiraj deadline
+	conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		log.Println("STUN timeout ili greška:", err)
 		return nil
 	}
 
-	// Parsiraj STUN Binding Response
 	if n < 20 {
 		return nil
 	}
 	msgType := binary.BigEndian.Uint16(buf[0:2])
-	if msgType != 0x0101 { // Binding Success Response
+	if msgType != 0x0101 {
 		return nil
 	}
 
-	// Iteriraj kroz atribute tražeći XOR-MAPPED-ADDRESS ili MAPPED-ADDRESS
 	msgLen := int(binary.BigEndian.Uint16(buf[2:4]))
 	pos := 20
 	for pos+4 <= 20+msgLen && pos+4 <= n {
@@ -123,15 +176,15 @@ func querySTUN(conn net.PacketConn) *net.UDPAddr {
 			break
 		}
 
-		if attrType == 0x0020 && attrLen >= 8 { // XOR-MAPPED-ADDRESS
+		if attrType == 0x0020 && attrLen >= 8 {
 			family := buf[pos+1]
-			if family == 0x01 { // IPv4
+			if family == 0x01 {
 				port := binary.BigEndian.Uint16(buf[pos+2:pos+4]) ^ 0x2112
 				ip := make(net.IP, 4)
 				binary.BigEndian.PutUint32(ip, binary.BigEndian.Uint32(buf[pos+4:pos+8])^0x2112A442)
 				return &net.UDPAddr{IP: ip, Port: int(port)}
 			}
-		} else if attrType == 0x0001 && attrLen >= 8 { // MAPPED-ADDRESS (fallback)
+		} else if attrType == 0x0001 && attrLen >= 8 {
 			family := buf[pos+1]
 			if family == 0x01 {
 				port := binary.BigEndian.Uint16(buf[pos+2 : pos+4])
@@ -141,7 +194,6 @@ func querySTUN(conn net.PacketConn) *net.UDPAddr {
 			}
 		}
 
-		// Atributi su poravnati na 4 bytea
 		pos += attrLen
 		if attrLen%4 != 0 {
 			pos += 4 - (attrLen % 4)
@@ -151,7 +203,6 @@ func querySTUN(conn net.PacketConn) *net.UDPAddr {
 	return nil
 }
 
-// getLocalIP vraća LAN IP adresu ovog stroja
 func getLocalIP() string {
 	conn, err := net.Dial("udp4", "8.8.8.8:80")
 	if err != nil {
@@ -185,12 +236,10 @@ func apiPost(url string, token string, body any) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }
 
-// Niži virtualIP je initiator u Noise handshakeu — deterministično određivanje uloga
 func amInitiator(peerVIP string) bool {
 	return myVirtualIP < peerVIP
 }
 
-// sendUDP šalje UDP paket s type prefiksom
 func sendUDP(addr *net.UDPAddr, msgType byte, data []byte) {
 	buf := make([]byte, 1+len(data))
 	buf[0] = msgType
@@ -200,7 +249,6 @@ func sendUDP(addr *net.UDPAddr, msgType byte, data []byte) {
 
 // --- Upravljanje peerovima ---
 
-// addPeer se poziva kad primimo peer_announce — kreira peer i pokreće probing
 func addPeer(username, virtualIP string, candidates []Candidate) {
 	if virtualIP == myVirtualIP {
 		return
@@ -217,14 +265,12 @@ func addPeer(username, virtualIP string, candidates []Candidate) {
 		Candidates: candidates,
 	}
 	peers[virtualIP] = peer
-	// NE registriramo u peersByUDP — to će napraviti handleProbe kad se peer resolva
 	peersMu.Unlock()
 
 	log.Printf("Novi peer: %s (%s), %d kandidata\n", username, virtualIP, len(candidates))
 	go probePeer(peer)
 }
 
-// removePeer briše peer po usernameu (kad primimo peer_left)
 func removePeer(username string) {
 	peersMu.Lock()
 	defer peersMu.Unlock()
@@ -242,10 +288,7 @@ func removePeer(username string) {
 
 // --- Probing ---
 
-// probePeer šalje probe pakete na sve kandidate peera dok ne dobije odgovor.
-// Ovo istovremeno obavlja UDP hole punching — slanje na STUN adresu kreira NAT mapping.
 func probePeer(peer *PeerInfo) {
-	// Resolviraj candidate adrese jednom
 	var addrs []*net.UDPAddr
 	for _, c := range peer.Candidates {
 		addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", c.Host, c.Port))
@@ -262,7 +305,7 @@ func probePeer(peer *PeerInfo) {
 
 	probe := []byte(myVirtualIP)
 
-	for i := 0; i < 20; i++ { // 20 × 500ms = 10 sekundi
+	for i := 0; i < 20; i++ {
 		peer.mu.Lock()
 		resolved := peer.Resolved
 		peer.mu.Unlock()
@@ -282,8 +325,6 @@ func probePeer(peer *PeerInfo) {
 	log.Printf("Probe timeout za %s (%s)\n", peer.Username, peer.VirtualIP)
 }
 
-// keepalive šalje periodične pakete svim peerovima da održi NAT mapping aktivnim.
-// Bez ovoga, NAT mapping istekne nakon 30-60 sekundi neaktivnosti i tunel prestane raditi.
 func keepalive() {
 	for {
 		time.Sleep(15 * time.Second)
@@ -299,8 +340,6 @@ func keepalive() {
 	}
 }
 
-// handleProbe procesira primljeni probe ili probe response.
-// Kad prvi probe stigne od peera, resolvira se njegova adresa i kreće handshake.
 func handleProbe(from *net.UDPAddr, msgType byte, payload []byte) {
 	senderVIP := string(payload)
 
@@ -309,15 +348,13 @@ func handleProbe(from *net.UDPAddr, msgType byte, payload []byte) {
 	peersMu.RUnlock()
 
 	if peer == nil {
-		return // announce za ovog peera još nije stigao
+		return
 	}
 
-	// Ako je ovo probe (ne response), pošalji response
 	if msgType == msgProbe {
 		sendUDP(from, msgProbeResp, []byte(myVirtualIP))
 	}
 
-	// Resolvaj peera ako još nije resolviran
 	peer.mu.Lock()
 	if peer.Resolved {
 		peer.mu.Unlock()
@@ -335,10 +372,10 @@ func handleProbe(from *net.UDPAddr, msgType byte, payload []byte) {
 	startHandshake(peer)
 }
 
-// --- Noise handshake ---
+// --- Noise handshake s key exchange ---
 
-// startHandshake kreira Noise NN handshake za peer.
-// Peer s nižim virtualIP-om je initiator i šalje prvi.
+// startHandshake kreira Noise NN handshake i šalje 32-byte random u payloadu.
+// Ovaj random se koristi za derivaciju AES-GCM ključeva nakon handshakea.
 func startHandshake(peer *PeerInfo) {
 	initiator := amInitiator(peer.VirtualIP)
 
@@ -357,15 +394,19 @@ func startHandshake(peer *PeerInfo) {
 	peer.mu.Unlock()
 
 	if initiator {
+		// Generiraj random za key exchange i pošalji u handshake payloadu
+		myRandom := make([]byte, 32)
+		rand.Read(myRandom)
+
 		peer.mu.Lock()
-		msg, _, _, err := peer.Handshake.WriteMessage(nil, nil)
+		peer.MyRandom = myRandom
+		msg, _, _, err := peer.Handshake.WriteMessage(nil, myRandom)
 		peer.mu.Unlock()
 		if err != nil {
 			log.Printf("Handshake write error s %s: %v\n", peer.Username, err)
 			return
 		}
 
-		// Retry goroutina
 		go func() {
 			for i := 0; i < 10; i++ {
 				peer.mu.Lock()
@@ -387,7 +428,8 @@ func startHandshake(peer *PeerInfo) {
 	}
 }
 
-// handleHandshakeMsg procesira primljenu handshake poruku od peera
+// handleHandshakeMsg procesira handshake poruku, razmjenjuje random payloade,
+// i nakon završetka derivira AES-GCM ključeve za enkripciju podataka.
 func handleHandshakeMsg(peer *PeerInfo, data []byte) {
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
@@ -403,24 +445,31 @@ func handleHandshakeMsg(peer *PeerInfo, data []byte) {
 		return
 	}
 
-	_, cs1, cs2, err := peer.Handshake.ReadMessage(nil, data)
+	// ReadMessage vraća payload (random drugog peera) i cipher state-ove
+	peerRandom, cs1, cs2, err := peer.Handshake.ReadMessage(nil, data)
 	if err != nil {
 		log.Printf("Handshake read error od %s: %v\n", peer.Username, err)
 		return
 	}
 
 	if cs1 != nil && cs2 != nil {
-		// Initiator: handshake završen
-		peer.SendCipher = cs1
-		peer.RecvCipher = cs2
+		// INITIATOR: handshake završen — primili smo responderov random
+		// peer.MyRandom = naš (initiatorov) random, peerRandom = responderov random
+		keyI2R, keyR2I := deriveKeys(peer.MyRandom, peerRandom)
+		peer.SendAEAD = createAEAD(keyI2R) // initiator šalje s I2R
+		peer.RecvAEAD = createAEAD(keyR2I) // initiator prima s R2I
 		peer.Ready = true
 		peer.Handshake = nil
-		log.Printf("Enkripcija uspostavljena s %s (%s)\n", peer.Username, peer.VirtualIP)
+		peer.MyRandom = nil // očisti
+		log.Printf("Enkripcija uspostavljena s %s (%s) [AES-256-GCM, explicit nonce]\n", peer.Username, peer.VirtualIP)
 		return
 	}
 
-	// Responder: šalje odgovor
-	msg, cs1, cs2, err := peer.Handshake.WriteMessage(nil, nil)
+	// RESPONDER: primili smo initiatorov random, šaljemo naš
+	myRandom := make([]byte, 32)
+	rand.Read(myRandom)
+
+	msg, cs1, cs2, err := peer.Handshake.WriteMessage(nil, myRandom)
 	if err != nil {
 		log.Printf("Handshake write error za %s: %v\n", peer.Username, err)
 		return
@@ -430,11 +479,14 @@ func handleHandshakeMsg(peer *PeerInfo, data []byte) {
 	sendUDP(peer.UDPAddr, msgHandshake, msg)
 
 	if cs1 != nil && cs2 != nil {
-		peer.RecvCipher = cs1
-		peer.SendCipher = cs2
+		// RESPONDER: handshake završen
+		// peerRandom = initiatorov random, myRandom = naš (responderov) random
+		keyI2R, keyR2I := deriveKeys(peerRandom, myRandom)
+		peer.SendAEAD = createAEAD(keyR2I) // responder šalje s R2I
+		peer.RecvAEAD = createAEAD(keyI2R) // responder prima s I2R
 		peer.Ready = true
 		peer.Handshake = nil
-		log.Printf("Enkripcija uspostavljena s %s (%s)\n", peer.Username, peer.VirtualIP)
+		log.Printf("Enkripcija uspostavljena s %s (%s) [AES-256-GCM, explicit nonce]\n", peer.Username, peer.VirtualIP)
 	}
 }
 
@@ -443,6 +495,9 @@ func handleHandshakeMsg(peer *PeerInfo, data []byte) {
 func getDestIP(packet []byte) net.IP {
 	if len(packet) < 20 {
 		return nil
+	}
+	if packet[0]>>4 != 4 {
+		return nil // preskoči IPv6
 	}
 	return net.IP(packet[16:20])
 }
@@ -461,27 +516,31 @@ func isBroadcast(ip net.IP) bool {
 	return false
 }
 
-// tunToUDP čita pakete s TUN adaptera i šalje ih pravom peeru (ili svima za broadcast)
+// tunToUDP čita pakete s TUN adaptera, enkriptira ih s AES-GCM (explicit nonce),
+// i šalje pravom peeru (ili svima za broadcast)
 func tunToUDP() {
 	bufs := make([][]byte, 1)
-	bufs[0] = make([]byte, 1500)
+	bufs[0] = make([]byte, tunOffset+1500)
 	sizes := make([]int, 1)
 
 	for {
-		n, err := tunDev.Read(bufs, sizes, 0)
+		n, err := tunDev.Read(bufs, sizes, tunOffset)
 		if err != nil {
 			log.Println("TUN read error:", err)
 			continue
 		}
 
 		for i := 0; i < n; i++ {
-			packet := bufs[i][:sizes[i]]
+			packet := bufs[i][tunOffset : tunOffset+sizes[i]]
 			destIP := getDestIP(packet)
 			if destIP == nil {
 				continue
 			}
 
-			log.Printf("[TUN→UDP] Paket %d bytea, dest=%s\n", sizes[i], destIP)
+			// Preskoči multicast (224.x-239.x) — ne treba za LAN igre
+			if destIP[0] >= 224 && destIP[0] <= 239 {
+				continue
+			}
 
 			type outPacket struct {
 				addr *net.UDPAddr
@@ -495,10 +554,9 @@ func tunToUDP() {
 				for _, peer := range peers {
 					peer.mu.Lock()
 					if peer.Ready {
-						encrypted, err := peer.SendCipher.Encrypt(nil, nil, packet)
-						if err == nil {
-							toSend = append(toSend, outPacket{peer.UDPAddr, encrypted})
-						}
+						peer.SendNonce++
+						encrypted := encryptPacket(peer.SendAEAD, peer.SendNonce, packet)
+						toSend = append(toSend, outPacket{peer.UDPAddr, encrypted})
 					}
 					peer.mu.Unlock()
 				}
@@ -506,10 +564,9 @@ func tunToUDP() {
 				if peer, ok := peers[destIP.String()]; ok {
 					peer.mu.Lock()
 					if peer.Ready {
-						encrypted, err := peer.SendCipher.Encrypt(nil, nil, packet)
-						if err == nil {
-							toSend = append(toSend, outPacket{peer.UDPAddr, encrypted})
-						}
+						peer.SendNonce++
+						encrypted := encryptPacket(peer.SendAEAD, peer.SendNonce, packet)
+						toSend = append(toSend, outPacket{peer.UDPAddr, encrypted})
 					}
 					peer.mu.Unlock()
 				}
@@ -517,18 +574,15 @@ func tunToUDP() {
 
 			peersMu.RUnlock()
 
-			if len(toSend) == 0 {
-				log.Printf("[TUN→UDP] Nema peera za dest=%s\n", destIP)
-			}
 			for _, pkt := range toSend {
-				log.Printf("[TUN→UDP] Šaljem %d bytea na %s\n", len(pkt.data), pkt.addr)
 				sendUDP(pkt.addr, msgData, pkt.data)
 			}
 		}
 	}
 }
 
-// udpToTUN čita UDP pakete — procesira probe, handshake ili enkriptirane podatke
+// udpToTUN čita UDP pakete, dekriptira s AES-GCM (čita counter iz paketa kao nonce),
+// i piše dekriptirani IP paket na TUN adapter
 func udpToTUN() {
 	buf := make([]byte, 2000)
 
@@ -551,22 +605,22 @@ func udpToTUN() {
 		payload := make([]byte, n-1)
 		copy(payload, buf[1:n])
 
-		// Probe paketi se procesiraju PRIJE peersByUDP lookupa jer
-		// neresolvirani peeri još nisu u toj mapi
 		if msgType == msgProbe || msgType == msgProbeResp {
 			handleProbe(udpAddr, msgType, payload)
 			continue
 		}
 		if msgType == msgKeepalive {
-			continue // samo održava NAT mapping, ne treba procesirati
+			continue
 		}
 
-		// Handshake i data — lookup po UDP adresi
 		peersMu.RLock()
 		peer := peersByUDP[udpAddr.String()]
 		peersMu.RUnlock()
 
 		if peer == nil {
+			if msgType == msgHandshake || msgType == msgData {
+				log.Printf("Nepoznat pošiljatelj %s\n", udpAddr)
+			}
 			continue
 		}
 
@@ -577,17 +631,18 @@ func udpToTUN() {
 		case msgData:
 			peer.mu.Lock()
 			if peer.Ready {
-				decrypted, err := peer.RecvCipher.Decrypt(nil, nil, payload)
+				decrypted, err := decryptPacket(peer.RecvAEAD, payload)
 				peer.mu.Unlock()
 				if err != nil {
-					log.Printf("[UDP→TUN] Decrypt error od %s: %v\n", peer.Username, err)
+					log.Printf("Decrypt error od %s: %v\n", peer.Username, err)
 					continue
 				}
-				log.Printf("[UDP→TUN] Dekriptirano %d bytea od %s\n", len(decrypted), peer.Username)
-				tunDev.Write([][]byte{decrypted}, 0)
+
+				paddedBuf := make([]byte, tunOffset+len(decrypted))
+				copy(paddedBuf[tunOffset:], decrypted)
+				tunDev.Write([][]byte{paddedBuf}, tunOffset)
 			} else {
 				peer.mu.Unlock()
-				log.Printf("[UDP→TUN] Data od %s ali peer nije ready\n", peer.Username)
 			}
 		}
 	}
@@ -728,7 +783,6 @@ func main() {
 			log.Fatal("Netsh error:", string(out), err)
 		}
 	} else {
-		// Linux: ip addr add + ip link set up
 		cmd := exec.Command("ip", "addr", "add", myVirtualIP+"/24", "dev", "vlan0")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			log.Fatal("ip addr error:", string(out), err)
@@ -759,33 +813,18 @@ func main() {
 		log.Println("STUN nije uspio — samo lokalni kandidat")
 	}
 
-	// Gradi listu kandidata
 	var candidates []Candidate
 	if localIP != "" {
-		candidates = append(candidates, Candidate{
-			Host: localIP,
-			Port: localPort,
-			Type: "local",
-		})
+		candidates = append(candidates, Candidate{Host: localIP, Port: localPort, Type: "local"})
 	}
 	if stunAddr != nil {
-		// Deduplikacija: ne dodaj ako je isto kao lokalni
 		if stunAddr.IP.String() != localIP || stunAddr.Port != localPort {
-			candidates = append(candidates, Candidate{
-				Host: stunAddr.IP.String(),
-				Port: stunAddr.Port,
-				Type: "stun",
-			})
+			candidates = append(candidates, Candidate{Host: stunAddr.IP.String(), Port: stunAddr.Port, Type: "stun"})
 		}
 	}
-	// Fallback za development
 	if len(candidates) == 0 {
-		candidates = append(candidates, Candidate{
-			Host: "127.0.0.1",
-			Port: localPort,
-			Type: "local",
-		})
-		log.Println("UPOZORENJE: koristi se localhost (STUN i LAN discovery neuspješni)")
+		candidates = append(candidates, Candidate{Host: "127.0.0.1", Port: localPort, Type: "local"})
+		log.Println("UPOZORENJE: koristi se localhost")
 	}
 
 	for _, c := range candidates {
@@ -810,7 +849,7 @@ func main() {
 	})
 	log.Println("Announce poslan")
 
-	// 8. Pokreni goroutine za networking
+	// 8. Pokreni goroutine
 	go listenWebSocket(wsConn)
 	go tunToUDP()
 	go udpToTUN()
