@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -409,7 +411,88 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// --- UDP Relay ---
+// Relay prosljeđuje enkriptirane pakete između klijenata koji ne mogu uspostaviti direktnu vezu
+// (npr. oba iza symmetric NAT-a). Server ne vidi sadržaj — samo prosljeđuje šifrirani blob.
+
+const (
+	relayRegister byte = 0x06
+	relayData     byte = 0x07
+)
+
+func startRelay() {
+	conn, err := net.ListenPacket("udp4", ":8081")
+	if err != nil {
+		log.Fatal("Relay UDP error:", err)
+	}
+	log.Println("Relay pokrenut na :8081")
+
+	// Registry: virtualIP → klijentova UDP adresa
+	registry := make(map[string]*net.UDPAddr)
+	var regMu sync.RWMutex
+
+	buf := make([]byte, 2000)
+	for {
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			log.Println("Relay read error:", err)
+			continue
+		}
+		if n < 2 {
+			continue
+		}
+
+		udpAddr := addr.(*net.UDPAddr)
+		msgType := buf[0]
+		payload := buf[1:n]
+
+		switch msgType {
+		case relayRegister:
+			// payload = virtualIP + \0
+			vip := string(bytes.TrimRight(payload, "\x00"))
+			regMu.Lock()
+			registry[vip] = udpAddr
+			regMu.Unlock()
+			log.Printf("Relay: %s registriran na %s\n", vip, udpAddr)
+
+		case relayData:
+			// payload = targetVIP\0 + originalMsgType(1B) + originalPayload
+			nullIdx := bytes.IndexByte(payload, 0)
+			if nullIdx < 0 || nullIdx+1 >= len(payload) {
+				continue
+			}
+			targetVIP := string(payload[:nullIdx])
+			innerData := payload[nullIdx+1:] // originalMsgType + originalPayload
+
+			// Pronađi pošiljateljev VIP (reverse lookup)
+			var senderVIP string
+			regMu.RLock()
+			for vip, a := range registry {
+				if a.IP.Equal(udpAddr.IP) && a.Port == udpAddr.Port {
+					senderVIP = vip
+					break
+				}
+			}
+			targetAddr := registry[targetVIP]
+			regMu.RUnlock()
+
+			if senderVIP == "" || targetAddr == nil {
+				continue
+			}
+
+			// Proslijedi: 0x07 + senderVIP\0 + innerData
+			fwd := []byte{relayData}
+			fwd = append(fwd, []byte(senderVIP)...)
+			fwd = append(fwd, 0)
+			fwd = append(fwd, innerData...)
+			conn.WriteTo(fwd, targetAddr)
+		}
+	}
+}
+
 func main() {
+	go startRelay() // UDP relay na :8081
+
 	http.HandleFunc("/register", handleRegister)
 	http.HandleFunc("/login", handleLogin)
 	http.HandleFunc("/network/create", handleCreateNetwork)
