@@ -1,12 +1,11 @@
 import { writable } from 'svelte/store'
 
-export const lang = writable('hr') // 'hr' ili 'en'
+export const lang = writable('hr')
 
 export function toggleLang() {
   lang.update(l => l === 'hr' ? 'en' : 'hr')
 }
 
-// UI tekstovi
 export const ui = {
   hr: {
     loginTitle: 'Identifikacija putnika',
@@ -18,23 +17,26 @@ export const ui = {
     loginBtn: 'Prijava / Registracija',
     aboutBtn: 'O PaLANtiru',
     exitBtn: 'Izlaz',
+    settingsBtn: 'Postavi server',
     createNet: 'Stvori novu mrežu',
     joinNet: 'Pridruži se postojećoj mreži',
+    viewNet: 'Pregled postojeće mreže',
+    leaveNet: 'Napusti mrežu',
     enterCode: 'Upiši kod mreže:',
     codePlaceholder: 'Kod mreže',
     join: 'Pridruži se',
     netCreated: 'Mreža kreirana! Kod:',
-    shareCode: 'Podijeli ovaj kod s prijateljem',
-    startTunnel: 'Pokreni tunel',
+    shareCode: 'Podijeli ovaj kod s prijateljem — čekam peere...',
     creating: 'Kreiranje...',
     connecting: 'Spajanje...',
-    starting: 'Pokretanje...',
     user: 'Korisnik',
     virtualIP: 'Virtualna IP',
     netCode: 'Kod mreže',
     peers: 'Peerovi',
     log: 'Dnevnik',
-    disconnect: 'Prekini vezu',
+    disconnect: 'Napusti mrežu',
+    backToMenu: '← Izbornik',
+    refreshPeers: '↻',
     waitingPeers: 'Čekam pridruživanje peerova...',
     waitingActivity: 'Čekam aktivnost...',
     connected: 'Spojen',
@@ -45,6 +47,11 @@ export const ui = {
     encyclopediaTitle: 'Enciklopedija mrežnih pojmova',
     searchPlaceholder: 'Pretraži pojmove...',
     inPalantir: 'U PaLANtiru:',
+    serverUrl: 'Adresa servera',
+    serverPort: 'Port',
+    save: 'Spremi',
+    settingsTitle: 'Postavke servera',
+    inNetworkWarning: 'Već ste u mreži. Napustite mrežu prije kreiranja nove.',
   },
   en: {
     loginTitle: 'Traveler Identification',
@@ -56,23 +63,26 @@ export const ui = {
     loginBtn: 'Login / Register',
     aboutBtn: 'About PaLANtir',
     exitBtn: 'Exit',
+    settingsBtn: 'Server Settings',
     createNet: 'Create new network',
     joinNet: 'Join existing network',
+    viewNet: 'View current network',
+    leaveNet: 'Leave network',
     enterCode: 'Enter network code:',
     codePlaceholder: 'Network code',
     join: 'Join',
     netCreated: 'Network created! Code:',
-    shareCode: 'Share this code with a friend',
-    startTunnel: 'Start tunnel',
+    shareCode: 'Share this code with a friend — waiting for peers...',
     creating: 'Creating...',
     connecting: 'Connecting...',
-    starting: 'Starting...',
     user: 'User',
     virtualIP: 'Virtual IP',
     netCode: 'Network code',
     peers: 'Peers',
     log: 'Log',
-    disconnect: 'Disconnect',
+    disconnect: 'Leave network',
+    backToMenu: '← Menu',
+    refreshPeers: '↻',
     waitingPeers: 'Waiting for peers to join...',
     waitingActivity: 'Waiting for activity...',
     connected: 'Connected',
@@ -83,5 +93,10 @@ export const ui = {
     encyclopediaTitle: 'Network Concepts Encyclopedia',
     searchPlaceholder: 'Search concepts...',
     inPalantir: 'In PaLANtir:',
+    serverUrl: 'Server address',
+    serverPort: 'Port',
+    save: 'Save',
+    settingsTitle: 'Server Settings',
+    inNetworkWarning: 'Already in a network. Leave it before creating a new one.',
   }
 }

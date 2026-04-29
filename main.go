@@ -678,15 +678,11 @@ func listenWebSocket(wsConn *websocket.Conn) {
 			json.Unmarshal(raw.Data, &data)
 			addPeer(data.Username, data.VirtualIP, data.Candidates)
 		case "peer_joined":
-			var data struct {
-				Username string `json:"username"`
-			}
+			var data struct{ Username string `json:"username"` }
 			json.Unmarshal(raw.Data, &data)
 			log.Printf("Peer %s se pridružio mreži\n", data.Username)
 		case "peer_left":
-			var data struct {
-				Username string `json:"username"`
-			}
+			var data struct{ Username string `json:"username"` }
 			json.Unmarshal(raw.Data, &data)
 			removePeer(data.Username)
 		case "peers_list":
