@@ -14,7 +14,13 @@ export function DoLogin(arg1:string,arg2:string):Promise<void>;
 
 export function DoRegister(arg1:string,arg2:string):Promise<void>;
 
+export function GetGbFlag():Promise<string>;
+
+export function GetHrFlag():Promise<string>;
+
 export function GetNetworkID():Promise<string>;
+
+export function GetSarumanGif():Promise<string>;
 
 export function GetServerURL():Promise<string>;
 

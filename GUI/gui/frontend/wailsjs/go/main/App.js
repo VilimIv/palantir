@@ -26,8 +26,20 @@ export function DoRegister(arg1, arg2) {
   return window['go']['main']['App']['DoRegister'](arg1, arg2);
 }
 
+export function GetGbFlag() {
+  return window['go']['main']['App']['GetGbFlag']();
+}
+
+export function GetHrFlag() {
+  return window['go']['main']['App']['GetHrFlag']();
+}
+
 export function GetNetworkID() {
   return window['go']['main']['App']['GetNetworkID']();
+}
+
+export function GetSarumanGif() {
+  return window['go']['main']['App']['GetSarumanGif']();
 }
 
 export function GetServerURL() {

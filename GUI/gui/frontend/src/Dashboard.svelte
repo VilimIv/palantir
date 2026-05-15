@@ -59,7 +59,7 @@
       {#each peers as p}
         <div class="peer">
           <div class="pl"><span class="pdot" class:on={p.ready}></span><span class="pn">{p.username}</span></div>
-          <div class="pr"><span class="pip">{p.virtualIP}</span><span class="mode" class:p2p={p.mode==='P2P'} class:relay={p.mode==='RELAY'}>{p.mode}</span></div>
+          <div class="pr"><span class="pip">{p.virtualIP}</span>{#if p.mode}<span class="mode" class:p2p={p.mode==='P2P'} class:relay={p.mode==='RELAY'}>{p.mode}</span>{:else}<span class="mode wait">···</span>{/if}</div>
         </div>
       {/each}
     </div>
@@ -107,7 +107,7 @@
   .pdot{width:6px;height:6px;border-radius:50%;background:#444} .pdot.on{background:#5a8a3c;box-shadow:0 0 4px rgba(90,138,60,.5)}
   .pn{color:#c9b06b;font-weight:600;font-size:.85em} .pip{color:#6b7b4a;font-family:monospace;font-size:.7em}
   .mode{padding:1px 6px;border-radius:6px;font-size:.55em;font-weight:700;letter-spacing:1px}
-  .mode.p2p{background:#1a2e14;color:#8aaa6a;border:1px solid #2a4a2a} .mode.relay{background:#2e2210;color:#c8a050;border:1px solid #4a3a1a}
+  .mode.p2p{background:#1a2e14;color:#8aaa6a;border:1px solid #2a4a2a} .mode.relay{background:#2e2210;color:#c8a050;border:1px solid #4a3a1a} .mode.wait{background:#1a1a14;color:#6b7b4a;border:1px solid #2a3d2a;animation:blink 1.5s infinite}
 
   .logbox{background:#060a06;border:1px solid #1a2e1a;border-radius:4px;padding:5px 7px;flex:1;min-height:60px;overflow-y:auto;overflow-x:hidden;font-family:'Consolas',monospace;font-size:.62em}
   .logln{color:#5a7a4a;padding:1px 0;word-break:break-all} .logln.dim{color:#2a3d2a}

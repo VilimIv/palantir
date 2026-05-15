@@ -532,7 +532,7 @@ Za gaming (tipično 2-8 igrača), full mesh je idealan. Za veće mreže (100+ č
   │ TUN  │  vlan0: 10.0.0.1            │ TUN  │  vlan0: 10.0.0.2
   │ Igra │  "LAN mreža"               │ Igra │  "LAN mreža"
   └──────┘                              └──────┘`,
-        image: "/images/palantir-saruman.gif",
+        image: 'sarumanGif',
         inPalantir: "Ovo je cjelokupna arhitektura PaLANtira. Server služi samo za signalizaciju i relay — sav gaming promet ide P2P kad god je moguće."
       },
       {
@@ -1089,7 +1089,7 @@ For gaming (typically 2-8 players), full mesh is ideal.`,
   │ TUN  │  vlan0: 10.0.0.1            │ TUN  │  vlan0: 10.0.0.2
   │ Game │  "LAN network"             │ Game │  "LAN network"
   └──────┘                              └──────┘`,
-        image: "/images/palantir-saruman.gif",
+        image: 'sarumanGif',
         inPalantir: "This is PaLANtir's complete architecture. The server only handles signaling and relay — all gaming traffic goes P2P whenever possible."
       },
       {

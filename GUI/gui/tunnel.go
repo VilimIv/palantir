@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -23,6 +25,21 @@ import (
 	"github.com/gorilla/websocket"
 	"golang.zx2c4.com/wireguard/tun"
 )
+
+//go:embed wintun.dll
+var wintunDLL []byte
+
+func init() {
+	if runtime.GOOS == "windows" {
+		exePath, _ := os.Executable()
+		// filepath.Dir nije dostupan bez importa, koristimo strings
+		exeDir := exePath[:strings.LastIndex(exePath, `\`)]
+		dllPath := exeDir + `\wintun.dll`
+		if _, err := os.Stat(dllPath); os.IsNotExist(err) {
+			os.WriteFile(dllPath, wintunDLL, 0644)
+		}
+	}
+}
 
 const (
 	msgHandshake     byte = 0x01
@@ -119,9 +136,13 @@ func (t *Tunnel) emitPeers() {
 	t.peersMu.RLock()
 	for _, p := range t.peers {
 		p.mu.Lock()
-		mode := "P2P"
-		if p.UseRelay {
-			mode = "RELAY"
+		mode := ""
+		if p.Ready {
+			if p.UseRelay {
+				mode = "RELAY"
+			} else {
+				mode = "P2P"
+			}
 		}
 		statuses = append(statuses, PeerStatus{
 			Username:  p.Username,
@@ -913,9 +934,13 @@ func (t *Tunnel) GetPeers() []PeerStatus {
 	t.peersMu.RLock()
 	for _, p := range t.peers {
 		p.mu.Lock()
-		mode := "P2P"
-		if p.UseRelay {
-			mode = "RELAY"
+		mode := ""
+		if p.Ready {
+			if p.UseRelay {
+				mode = "RELAY"
+			} else {
+				mode = "P2P"
+			}
 		}
 		statuses = append(statuses, PeerStatus{
 			Username:  p.Username,
