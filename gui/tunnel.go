@@ -26,15 +26,17 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-//go:embed wintun.dll
+//go:embed dll/wintun.dll
 var wintunDLL []byte
 
 func init() {
 	if runtime.GOOS == "windows" {
 		exePath, _ := os.Executable()
-		// filepath.Dir nije dostupan bez importa, koristimo strings
-		exeDir := exePath[:strings.LastIndex(exePath, `\`)]
-		dllPath := exeDir + `\wintun.dll`
+		idx := strings.LastIndex(exePath, `\`)
+		if idx < 0 {
+			return
+		}
+		dllPath := exePath[:idx] + `\wintun.dll`
 		if _, err := os.Stat(dllPath); os.IsNotExist(err) {
 			os.WriteFile(dllPath, wintunDLL, 0644)
 		}
@@ -66,6 +68,7 @@ type PeerInfo struct {
 	UDPAddr           *net.UDPAddr
 	Resolved          bool
 	UseRelay          bool
+	DataSent          bool // true kad je stvarno poslan prvi data paket
 	Handshake         *noise.HandshakeState
 	HandshakeResponse []byte
 	MyRandom          []byte
@@ -78,10 +81,11 @@ type PeerInfo struct {
 
 // PeerStatus je struktura za prikaz u GUI-u
 type PeerStatus struct {
-	Username  string `json:"username"`
-	VirtualIP string `json:"virtualIP"`
-	Mode      string `json:"mode"` // "P2P" ili "RELAY"
-	Ready     bool   `json:"ready"`
+	Username      string `json:"username"`
+	VirtualIP     string `json:"virtualIP"`
+	Mode          string `json:"mode"` // "P2P" ili "RELAY"
+	Ready         bool   `json:"ready"`
+	DataConfirmed bool   `json:"dataConfirmed"` // true kad je stvarno poslan/primljen data paket
 }
 
 // Tunnel drži svo stanje tunela
@@ -145,10 +149,11 @@ func (t *Tunnel) emitPeers() {
 			}
 		}
 		statuses = append(statuses, PeerStatus{
-			Username:  p.Username,
-			VirtualIP: p.VirtualIP,
-			Mode:      mode,
-			Ready:     p.Ready,
+			Username:      p.Username,
+			VirtualIP:     p.VirtualIP,
+			Mode:          mode,
+			Ready:         p.Ready,
+			DataConfirmed: p.DataSent,
 		})
 		p.mu.Unlock()
 	}
@@ -291,6 +296,17 @@ func (t *Tunnel) sendUDP(addr *net.UDPAddr, msgType byte, data []byte) {
 }
 
 func (t *Tunnel) sendToPeer(peer *PeerInfo, msgType byte, data []byte) {
+	// Logiraj samo prvi data paket — potvrda koja putanja se stvarno koristi
+	if msgType == msgData && !peer.DataSent {
+		peer.DataSent = true
+		path := "P2P → " + peer.UDPAddr.String()
+		if peer.UseRelay {
+			path = "RELAY → " + t.relayAddr.String()
+		}
+		t.log("Prva podatkovni paket za %s: %s", peer.Username, path)
+		go t.emitPeers()
+	}
+
 	if peer.UseRelay && t.relayAddr != nil {
 		buf := []byte{msgRelayData}
 		buf = append(buf, []byte(peer.VirtualIP)...)
@@ -805,11 +821,15 @@ func (t *Tunnel) listenWebSocket() {
 			json.Unmarshal(raw.Data, &data)
 			t.addPeer(data.Username, data.VirtualIP, data.Candidates)
 		case "peer_joined":
-			var data struct{ Username string `json:"username"` }
+			var data struct {
+				Username string `json:"username"`
+			}
 			json.Unmarshal(raw.Data, &data)
 			t.log("Peer %s se pridružio mreži", data.Username)
 		case "peer_left":
-			var data struct{ Username string `json:"username"` }
+			var data struct {
+				Username string `json:"username"`
+			}
 			json.Unmarshal(raw.Data, &data)
 			t.removePeer(data.Username)
 		}
@@ -943,10 +963,11 @@ func (t *Tunnel) GetPeers() []PeerStatus {
 			}
 		}
 		statuses = append(statuses, PeerStatus{
-			Username:  p.Username,
-			VirtualIP: p.VirtualIP,
-			Mode:      mode,
-			Ready:     p.Ready,
+			Username:      p.Username,
+			VirtualIP:     p.VirtualIP,
+			Mode:          mode,
+			Ready:         p.Ready,
+			DataConfirmed: p.DataSent,
 		})
 		p.mu.Unlock()
 	}

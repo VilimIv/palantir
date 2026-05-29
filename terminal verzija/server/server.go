@@ -427,8 +427,8 @@ func startRelay() {
 	}
 	log.Println("Relay pokrenut na :8081")
 
-	// Registry: virtualIP → klijentova UDP adresa
-	registry := make(map[string]*net.UDPAddr)
+	registry   := make(map[string]*net.UDPAddr) // virtualIP → adresa
+	reverseReg := make(map[string]string)        // adresa.String() → virtualIP
 	var regMu sync.RWMutex
 
 	buf := make([]byte, 2000)
@@ -448,31 +448,28 @@ func startRelay() {
 
 		switch msgType {
 		case relayRegister:
-			// payload = virtualIP + \0
 			vip := string(bytes.TrimRight(payload, "\x00"))
 			regMu.Lock()
+			// Ako je VIP već bio registriran s drugom adresom, ukloni stari reverse zapis
+			if old, ok := registry[vip]; ok {
+				delete(reverseReg, old.String())
+			}
 			registry[vip] = udpAddr
+			reverseReg[udpAddr.String()] = vip // O(1) reverse lookup
 			regMu.Unlock()
 			log.Printf("Relay: %s registriran na %s\n", vip, udpAddr)
 
 		case relayData:
-			// payload = targetVIP\0 + originalMsgType(1B) + originalPayload
 			nullIdx := bytes.IndexByte(payload, 0)
 			if nullIdx < 0 || nullIdx+1 >= len(payload) {
 				continue
 			}
 			targetVIP := string(payload[:nullIdx])
-			innerData := payload[nullIdx+1:] // originalMsgType + originalPayload
+			innerData := payload[nullIdx+1:]
 
-			// Pronađi pošiljateljev VIP (reverse lookup)
-			var senderVIP string
+			// O(1) reverse lookup umjesto O(n) skeniranja
 			regMu.RLock()
-			for vip, a := range registry {
-				if a.IP.Equal(udpAddr.IP) && a.Port == udpAddr.Port {
-					senderVIP = vip
-					break
-				}
-			}
+			senderVIP := reverseReg[udpAddr.String()]
 			targetAddr := registry[targetVIP]
 			regMu.RUnlock()
 

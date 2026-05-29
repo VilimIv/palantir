@@ -53,6 +53,14 @@
         <h3 class="dt">{resolvedTopic.title}</h3>
         <div class="desc">{resolvedTopic.description}</div>
         {#if resolvedTopic.diagram}<pre class="diag">{resolvedTopic.diagram}</pre>{/if}
+        {#if resolvedTopic.commands}
+          {#each resolvedTopic.commands as cmd}
+            <div class="cmd-block">
+              {#if cmd.label}<div class="cmd-label">{cmd.label}</div>{/if}
+              <pre class="cmd-code">{cmd.code}</pre>
+            </div>
+          {/each}
+        {/if}
         {#if resolvedTopic.image}<img src={resolvedTopic.image} alt="" class="timg"/>{/if}
         {#if resolvedTopic.inPalantir}<div class="pbox"><strong>{t.inPalantir}</strong><p>{resolvedTopic.inPalantir}</p></div>{/if}
       </div>
@@ -87,6 +95,10 @@
   .dt{color:#c9a84c;font-family:'Cinzel',serif;font-size:.95em;margin:3px 0 6px}
   .desc{color:#d0d8b0;line-height:1.6;font-size:.82em;white-space:pre-line;word-wrap:break-word}
   .diag{background:#080e08;border:1px solid #1a2e1a;border-radius:4px;padding:8px;margin:8px 0;font-family:'Consolas',monospace;font-size:.58em;color:#a0c080;overflow-x:auto;line-height:1.35;white-space:pre;user-select:text;max-width:100%}
+  .cmd-block{margin:8px 0;border-radius:6px;overflow:hidden;border:1px solid #2a4a2a}
+  .cmd-label{background:#1a3020;color:#8aaa5a;font-family:'Cinzel',serif;font-size:.62em;padding:4px 10px;letter-spacing:1px;border-bottom:1px solid #2a4a2a}
+  .cmd-code{background:#080e08;color:#c0e090;font-family:'Consolas',monospace;font-size:.65em;padding:8px 10px;margin:0;white-space:pre;overflow-x:auto;line-height:1.5;user-select:text}
+
   .timg{width:100%;border-radius:5px;margin:10px 0;border:1px solid #1a2e1a}
   .pbox{background:rgba(90,138,58,.12);border-left:3px solid #6aaa4a;padding:8px 12px;border-radius:0 6px 6px 0;margin-top:10px;font-size:.82em}
   .pbox strong{color:#a0cc6a;font-size:.95em} .pbox p{margin:4px 0 0;color:#b8c898;line-height:1.5}

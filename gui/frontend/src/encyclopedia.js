@@ -539,27 +539,36 @@ Za gaming (tipično 2-8 igrača), full mesh je idealan. Za veće mreže (100+ č
         title: "Postavljanje vatrozida",
         description: `Da bi PaLANtir i LAN igre radili, potrebno je dopustiti mrežni promet na virtualnoj mreži (10.0.0.0/24).
 
-WINDOWS (PowerShell kao administrator):
-
-1. Dopusti ICMP (ping):
-New-NetFirewallRule -DisplayName "Palantir ICMP" -Protocol ICMPv4 -IcmpType 8 -Direction Inbound -Action Allow
-
-2. Dopusti sav promet s virtualne mreže:
-New-NetFirewallRule -DisplayName "Palantir VPN All" -Direction Inbound -RemoteAddress 10.0.0.0/24 -Action Allow
-
-3. Uklanjanje pravila kad završiš:
-Remove-NetFirewallRule -DisplayName "Palantir ICMP"
-Remove-NetFirewallRule -DisplayName "Palantir VPN All"
-
-LINUX (terminal):
-
-1. Dopusti sav promet s virtualne mreže:
-sudo iptables -A INPUT -s 10.0.0.0/24 -j ACCEPT
-
-Ili s ufw:
-sudo ufw allow from 10.0.0.0/24
+Pokretanje: PowerShell kao Administrator (Windows) ili terminal (Linux).
 
 NAPOMENA: Ova pravila dopuštaju promet SAMO s virtualne mreže (10.0.0.x). Jedini način da paket ima tu izvorišnu adresu je da dođe kroz PaLANtir-ov enkriptirani tunel. Sigurnosni rizik je minimalan.`,
+        commands: [
+          {
+            label: 'Windows — Dopusti ICMP (ping)',
+            code: `New-NetFirewallRule -DisplayName "Palantir ICMP" \`
+  -Protocol ICMPv4 -IcmpType 8 \`
+  -Direction Inbound -Action Allow`
+          },
+          {
+            label: 'Windows — Dopusti sav promet s virtualne mreže',
+            code: `New-NetFirewallRule -DisplayName "Palantir VPN All" \`
+  -Direction Inbound \`
+  -RemoteAddress 10.0.0.0/24 -Action Allow`
+          },
+          {
+            label: 'Windows — Ukloni pravila kad završiš',
+            code: `Remove-NetFirewallRule -DisplayName "Palantir ICMP"
+Remove-NetFirewallRule -DisplayName "Palantir VPN All"`
+          },
+          {
+            label: 'Linux — iptables',
+            code: `sudo iptables -A INPUT -s 10.0.0.0/24 -j ACCEPT`
+          },
+          {
+            label: 'Linux — ufw (alternativa)',
+            code: `sudo ufw allow from 10.0.0.0/24`
+          }
+        ],
         inPalantir: "Bez ovih pravila, ping će raditi ali igre neće moći komunicirati. Windows posebno blokira dolazni promet na novim mrežnim adapterima (vlan0 se klasificira kao 'Public' mreža)."
       },
       {
@@ -1096,27 +1105,36 @@ For gaming (typically 2-8 players), full mesh is ideal.`,
         title: "Firewall Setup",
         description: `For PaLANtir and LAN games to work, you need to allow network traffic on the virtual network (10.0.0.0/24).
 
-WINDOWS (PowerShell as administrator):
-
-1. Allow ICMP (ping):
-New-NetFirewallRule -DisplayName "Palantir ICMP" -Protocol ICMPv4 -IcmpType 8 -Direction Inbound -Action Allow
-
-2. Allow all traffic from virtual network:
-New-NetFirewallRule -DisplayName "Palantir VPN All" -Direction Inbound -RemoteAddress 10.0.0.0/24 -Action Allow
-
-3. Remove rules when done:
-Remove-NetFirewallRule -DisplayName "Palantir ICMP"
-Remove-NetFirewallRule -DisplayName "Palantir VPN All"
-
-LINUX (terminal):
-
-1. Allow all traffic from virtual network:
-sudo iptables -A INPUT -s 10.0.0.0/24 -j ACCEPT
-
-Or with ufw:
-sudo ufw allow from 10.0.0.0/24
+Run PowerShell as Administrator (Windows) or use terminal (Linux).
 
 NOTE: These rules only allow traffic from the virtual network (10.0.0.x). The only way a packet can have that source address is through PaLANtir's encrypted tunnel. Security risk is minimal.`,
+        commands: [
+          {
+            label: 'Windows — Allow ICMP (ping)',
+            code: `New-NetFirewallRule -DisplayName "Palantir ICMP" \`
+  -Protocol ICMPv4 -IcmpType 8 \`
+  -Direction Inbound -Action Allow`
+          },
+          {
+            label: 'Windows — Allow all traffic from virtual network',
+            code: `New-NetFirewallRule -DisplayName "Palantir VPN All" \`
+  -Direction Inbound \`
+  -RemoteAddress 10.0.0.0/24 -Action Allow`
+          },
+          {
+            label: 'Windows — Remove rules when done',
+            code: `Remove-NetFirewallRule -DisplayName "Palantir ICMP"
+Remove-NetFirewallRule -DisplayName "Palantir VPN All"`
+          },
+          {
+            label: 'Linux — iptables',
+            code: `sudo iptables -A INPUT -s 10.0.0.0/24 -j ACCEPT`
+          },
+          {
+            label: 'Linux — ufw (alternative)',
+            code: `sudo ufw allow from 10.0.0.0/24`
+          }
+        ],
         inPalantir: "Without these rules, ping works but games can't communicate. Windows specifically blocks incoming traffic on new network adapters (vlan0 is classified as 'Public' network)."
       },
       {

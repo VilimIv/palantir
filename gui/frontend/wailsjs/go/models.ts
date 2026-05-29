@@ -65,6 +65,7 @@ export namespace main {
 	    virtualIP: string;
 	    mode: string;
 	    ready: boolean;
+	    dataConfirmed: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new PeerStatus(source);
@@ -76,6 +77,7 @@ export namespace main {
 	        this.virtualIP = source["virtualIP"];
 	        this.mode = source["mode"];
 	        this.ready = source["ready"];
+	        this.dataConfirmed = source["dataConfirmed"];
 	    }
 	}
 
